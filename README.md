@@ -103,8 +103,9 @@ Point your agent SDK at `http://localhost:3100/v1` and add header `X-Harness-Str
 | `HARNESS_WORKER_MODEL` | `deepseek/deepseek-chat` | Micro-task worker |
 | `HARNESS_AUDITOR_MODEL` | `anthropic/claude-3.5-haiku` | Goal auditor |
 | `HARNESS_MAX_AUDITOR_RETRIES` | `3` | Auditor retry budget |
+| `HARNESS_FRONTIER_MODELS_PATH` | `config/frontier-models.json` | Custom frontier model registry path |
 
-Frontier models for the accuracy strategy: `config/frontier-models.json`.
+Frontier models for the accuracy strategy: `config/frontier-models.json`. The registry **hot-reloads** — edit the file while the proxy runs and the next request picks it up. An invalid edit never takes down the proxy: the last good config keeps being served (with a logged warning) until the file is fixed.
 
 ### Context markers
 
@@ -146,6 +147,7 @@ src/decomphose/
   strategies/
     accuracy.py          # Precision Router
     affordability.py     # Decomposition sandbox
+  registry.py            # Hot-reloading frontier model registry
   clients/openrouter.py  # Async OpenRouter client (complete / forward_raw / stream_raw)
   middleware/harness.py
   utils/streaming.py     # SSE encoding (passthrough + synthetic chunk streams)
@@ -175,7 +177,7 @@ pytest tests/
 
 - [x] Async OpenRouter client + streaming passthrough
 - [x] Structured decomposition validation (Pydantic)
-- [ ] Pluggable model registry (hot reload)
+- [x] Pluggable model registry (hot reload)
 - [ ] OpenTelemetry traces per micro-task
 - [ ] Docker Compose for local agent testing
 

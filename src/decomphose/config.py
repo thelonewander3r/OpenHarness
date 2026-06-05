@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-import json
 from functools import lru_cache
 from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from decomphose.registry import ModelRegistry
 from decomphose.types import FrontierModelsConfig
+
 
 def _resolve_project_root() -> Path:
     candidate = Path(__file__).resolve().parents[2]
@@ -36,6 +37,7 @@ class HarnessSettings(BaseSettings):
     harness_worker_model: str = "deepseek/deepseek-chat"
     harness_auditor_model: str = "anthropic/claude-3.5-haiku"
     harness_max_auditor_retries: int = 3
+    harness_frontier_models_path: str = ""
 
 
 @lru_cache
@@ -48,11 +50,21 @@ def get_settings() -> HarnessSettings:
     return settings
 
 
+def resolve_registry_path(settings: HarnessSettings) -> Path:
+    if settings.harness_frontier_models_path:
+        return Path(settings.harness_frontier_models_path).expanduser().resolve()
+    return FRONTIER_CONFIG_PATH
+
+
 @lru_cache
+def get_model_registry() -> ModelRegistry:
+    return ModelRegistry(resolve_registry_path(get_settings()))
+
+
 def load_frontier_models() -> FrontierModelsConfig:
-    raw = FRONTIER_CONFIG_PATH.read_text(encoding="utf-8")
-    return FrontierModelsConfig.model_validate(json.loads(raw))
+    """Current frontier model registry — hot-reloads when the backing file changes."""
+    return get_model_registry().load()
 
 
 def clear_frontier_cache() -> None:
-    load_frontier_models.cache_clear()
+    get_model_registry.cache_clear()
