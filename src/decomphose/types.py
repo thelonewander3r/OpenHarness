@@ -3,7 +3,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class HarnessStrategy(str, Enum):
@@ -44,6 +44,37 @@ class MicroTask(BaseModel):
     instruction: str
     relevant_context_keys: list[str] = Field(
         default_factory=list, alias="relevantContextKeys"
+    )
+
+    model_config = {"populate_by_name": True}
+
+
+class DecomposedMicroTask(BaseModel):
+    """Raw micro-task as emitted by the decomposition model, before normalization."""
+
+    id: str | None = None
+    title: str | None = None
+    instruction: str
+    relevant_context_keys: list[str] = Field(
+        default_factory=list, alias="relevantContextKeys"
+    )
+
+    model_config = {"populate_by_name": True}
+
+    @field_validator("instruction")
+    @classmethod
+    def _instruction_non_empty(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("instruction must be a non-empty string")
+        return stripped
+
+
+class DecompositionPlan(BaseModel):
+    """Schema for the decomposition model's JSON output."""
+
+    micro_tasks: list[DecomposedMicroTask] = Field(
+        default_factory=list, alias="microTasks"
     )
 
     model_config = {"populate_by_name": True}

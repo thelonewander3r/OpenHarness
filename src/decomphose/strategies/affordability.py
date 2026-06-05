@@ -16,7 +16,8 @@ from decomphose.types import (
     StrategyResultMeta,
 )
 from decomphose.utils.context_diet import extract_context_documents, slice_context_for_task
-from decomphose.utils.errors import MicroTaskError
+from decomphose.utils.decomposition import parse_decomposition_plan
+from decomphose.utils.errors import DecompositionError, MicroTaskError
 from decomphose.utils.logging import log_with_meta
 from decomphose.utils.streaming import sse_synthetic_completion
 
@@ -168,44 +169,70 @@ async def _decompose_master_task(
         f"[context:{d.key}]\n{d.content[:2000]}" for d in context_docs
     )
 
-    raw = await client.complete(
-        model=model,
-        messages=[
-            {"role": "system", "content": DECOMP_SYSTEM},
-            {
-                "role": "user",
-                "content": f"Master task:\n{user_prompt}\n\nContext documents:\n{context_summary}",
-            },
-        ],
-        temperature=0.1,
-        response_format={"type": "json_object"},
-    )
+    base_messages: list[dict[str, Any]] = [
+        {"role": "system", "content": DECOMP_SYSTEM},
+        {
+            "role": "user",
+            "content": f"Master task:\n{user_prompt}\n\nContext documents:\n{context_summary}",
+        },
+    ]
 
-    parsed = json.loads(raw)
-    micro_tasks_raw = parsed.get("microTasks") or []
-    if not micro_tasks_raw:
-        return [
-            MicroTask(
-                id="task-1",
-                index=0,
-                title="Execute master task",
-                instruction=user_prompt,
-                relevant_context_keys=[d.key for d in context_docs],
-            )
-        ]
-
-    result: list[MicroTask] = []
-    for index, item in enumerate(micro_tasks_raw):
-        result.append(
-            MicroTask(
-                id=item.get("id") or f"task-{index + 1}",
-                index=index,
-                title=item.get("title") or f"Step {index + 1}",
-                instruction=item["instruction"],
-                relevant_context_keys=item.get("relevantContextKeys") or [],
-            )
+    messages = base_messages
+    for attempt in (1, 2):
+        raw = await client.complete(
+            model=model,
+            messages=messages,
+            temperature=0.1,
+            response_format={"type": "json_object"},
         )
-    return result
+
+        try:
+            micro_tasks = parse_decomposition_plan(raw)
+        except DecompositionError as exc:
+            log_with_meta(
+                log,
+                logging.WARNING,
+                "Decomposition output invalid",
+                {"attempt": attempt, "error": exc.message},
+            )
+            # One corrective retry: feed the bad output and the validation error back.
+            messages = [
+                *base_messages,
+                {"role": "assistant", "content": raw},
+                {
+                    "role": "user",
+                    "content": (
+                        f"That response was invalid: {exc.message}\n"
+                        "Respond again with ONLY the corrected JSON object — no fences, no prose."
+                    ),
+                },
+            ]
+            continue
+
+        if micro_tasks:
+            return micro_tasks
+        break  # Valid but empty plan — fall through to single-task fallback.
+
+    log_with_meta(
+        log,
+        logging.WARNING,
+        "Decomposition failed validation — falling back to single master task",
+        {"decompModel": model},
+    )
+    return [_fallback_micro_task(user_prompt, context_docs)]
+
+
+def _fallback_micro_task(
+    user_prompt: str,
+    context_docs: list[ContextDocument],
+) -> MicroTask:
+    return MicroTask(
+        id="task-1",
+        index=0,
+        title="Execute master task",
+        instruction=user_prompt,
+        relevant_context_keys=[d.key for d in context_docs],
+    )
 
 
 async def _run_micro_task_pipeline(

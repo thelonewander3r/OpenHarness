@@ -24,6 +24,11 @@ class StrategyError(HarnessError):
         super().__init__(message, code, status, cause)
 
 
+class DecompositionError(StrategyError):
+    def __init__(self, message: str, cause: BaseException | None = None) -> None:
+        super().__init__(message, "INVALID_DECOMPOSITION", 502, cause)
+
+
 class MicroTaskError(HarnessError):
     def __init__(self, task_id: str, message: str, cause: BaseException | None = None) -> None:
         super().__init__(

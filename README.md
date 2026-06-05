@@ -36,7 +36,7 @@ flowchart LR
 
 ### Affordability pipeline (4 steps)
 
-1. **Decomposition** — cheap model breaks the master task into linear micro-tasks (JSON).
+1. **Decomposition** — cheap model breaks the master task into linear micro-tasks (JSON, Pydantic-validated; one corrective retry on malformed output, then graceful fallback to a single master task).
 2. **Context dieting** — each micro-task receives only `[context:key]` slices it needs.
 3. **Goal auditor loop** — cheap “auditor” model rejects weak outputs; worker retries with feedback (max 3).
 4. **Compilation** — validated segments merge into one OpenAI-shaped `chat.completion`.
@@ -149,6 +149,7 @@ src/decomphose/
   clients/openrouter.py  # Async OpenRouter client (complete / forward_raw / stream_raw)
   middleware/harness.py
   utils/streaming.py     # SSE encoding (passthrough + synthetic chunk streams)
+  utils/decomposition.py # Pydantic validation of decomposition output
 config/frontier-models.json
 tests/test_streaming.py  # No-network smoke tests (fake upstream client)
 test_agent.py
@@ -173,7 +174,7 @@ pytest tests/
 ## Roadmap
 
 - [x] Async OpenRouter client + streaming passthrough
-- [ ] Structured decomposition validation (Pydantic)
+- [x] Structured decomposition validation (Pydantic)
 - [ ] Pluggable model registry (hot reload)
 - [ ] OpenTelemetry traces per micro-task
 - [ ] Docker Compose for local agent testing
