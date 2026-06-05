@@ -89,6 +89,22 @@ python test_agent.py
 
 Point your agent SDK at `http://localhost:3100/v1` and add header `X-Harness-Strategy: affordability` or `accuracy`.
 
+### Docker
+
+```bash
+docker compose up --build          # harness on http://localhost:3100
+
+docker compose --profile test up --abort-on-container-exit   # + one-shot agent simulation
+docker compose --profile otel up                             # + Jaeger trace UI on http://localhost:16686
+```
+
+`.env` is loaded if present (required for live upstream calls). `config/` is volume-mounted, so registry edits hot-reload inside the container. For the `otel` profile, set in `.env`:
+
+```text
+HARNESS_OTEL_ENABLED=1
+OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318
+```
+
 ---
 
 ## Configuration
@@ -196,7 +212,7 @@ pytest tests/
 - [x] Structured decomposition validation (Pydantic)
 - [x] Pluggable model registry (hot reload)
 - [x] OpenTelemetry traces per micro-task
-- [ ] Docker Compose for local agent testing
+- [x] Docker Compose for local agent testing
 
 ---
 

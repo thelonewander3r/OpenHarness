@@ -1,0 +1,36 @@
+services:
+  decomphose:
+    build: .
+    ports:
+      - "3100:3100"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      HARNESS_HOST: 0.0.0.0
+    volumes:
+      # Hot-reloadable model registry: edit on the host, next request picks it up.
+      - ./config:/app/config:ro
+
+  # One-shot agent simulation against the running harness (needs OPENROUTER_API_KEY in .env):
+  #   docker compose --profile test up --abort-on-container-exit
+  test-agent:
+    build: .
+    profiles: ["test"]
+    depends_on:
+      decomphose:
+        condition: service_healthy
+    environment:
+      HARNESS_URL: http://decomphose:3100
+    command: ["python", "test_agent.py"]
+
+  # Trace backend for HARNESS_OTEL_ENABLED=1 (see README "Observability"):
+  #   docker compose --profile otel up
+  jaeger:
+    image: jaegertracing/all-in-one:1.62
+    profiles: ["otel"]
+    ports:
+      - "16686:16686" # UI
+      - "4318:4318" # OTLP/HTTP
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
