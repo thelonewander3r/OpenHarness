@@ -5,7 +5,11 @@ import logging
 import time
 from typing import Any
 
+from opentelemetry import trace
+from opentelemetry.trace import StatusCode
+
 from decomphose.strategies.context import StrategyContext
+from decomphose.telemetry import get_tracer
 from decomphose.types import (
     AuditorVerdictPass,
     AuditorVerdictReject,
@@ -70,12 +74,15 @@ async def execute_affordability_strategy(ctx: StrategyContext) -> StrategyResult
         },
     )
 
-    micro_tasks = await _decompose_master_task(
-        ctx.client,
-        settings.harness_decomp_model,
-        user_prompt,
-        context_docs,
-    )
+    with get_tracer().start_as_current_span("affordability.decompose") as span:
+        span.set_attribute("llm.model", settings.harness_decomp_model)
+        micro_tasks = await _decompose_master_task(
+            ctx.client,
+            settings.harness_decomp_model,
+            user_prompt,
+            context_docs,
+        )
+        span.set_attribute("harness.micro_task_count", len(micro_tasks))
 
     log_with_meta(
         log,
@@ -92,28 +99,34 @@ async def execute_affordability_strategy(ctx: StrategyContext) -> StrategyResult
     total_auditor_retries = 0
 
     for task in micro_tasks:
-        try:
-            output, retries = await _run_micro_task_pipeline(
-                ctx.client, settings, task, context_docs
-            )
-            total_auditor_retries += retries
-            validated_outputs.append(f"## {task.title}\n\n{output}")
-            log_with_meta(
-                log,
-                logging.INFO,
-                "Micro-task validated",
-                {"step": "micro-task-complete", "taskId": task.id, "auditorRetries": retries},
-            )
-        except MicroTaskError as exc:
-            log_with_meta(
-                log,
-                logging.ERROR,
-                "Micro-task failed (isolated)",
-                {"taskId": task.id, "error": exc.message},
-            )
-            validated_outputs.append(
-                f"## {task.title}\n\n[HARNESS: micro-task failed after retries — {exc.message}]"
-            )
+        with get_tracer().start_as_current_span("affordability.micro_task") as span:
+            span.set_attribute("harness.task.id", task.id)
+            span.set_attribute("harness.task.title", task.title)
+            span.set_attribute("harness.task.context_keys", ",".join(task.relevant_context_keys))
+            try:
+                output, retries = await _run_micro_task_pipeline(
+                    ctx.client, settings, task, context_docs
+                )
+                total_auditor_retries += retries
+                span.set_attribute("harness.auditor_retries", retries)
+                validated_outputs.append(f"## {task.title}\n\n{output}")
+                log_with_meta(
+                    log,
+                    logging.INFO,
+                    "Micro-task validated",
+                    {"step": "micro-task-complete", "taskId": task.id, "auditorRetries": retries},
+                )
+            except MicroTaskError as exc:
+                span.set_status(StatusCode.ERROR, exc.message)
+                log_with_meta(
+                    log,
+                    logging.ERROR,
+                    "Micro-task failed (isolated)",
+                    {"taskId": task.id, "error": exc.message},
+                )
+                validated_outputs.append(
+                    f"## {task.title}\n\n[HARNESS: micro-task failed after retries — {exc.message}]"
+                )
 
     log_with_meta(
         log,
@@ -284,11 +297,15 @@ async def _run_micro_task_pipeline(
         )
 
         if isinstance(verdict, AuditorVerdictPass):
+            trace.get_current_span().add_event("auditor.pass", {"attempt": attempt})
             log_with_meta(log, logging.INFO, "Auditor PASS", {"taskId": task.id, "attempt": attempt})
             return output, retries
 
         retries += 1
         last_feedback = verdict.feedback
+        trace.get_current_span().add_event(
+            "auditor.reject", {"attempt": attempt, "feedback": verdict.feedback}
+        )
 
         log_with_meta(
             log,

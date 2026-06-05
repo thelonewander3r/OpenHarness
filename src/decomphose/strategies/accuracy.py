@@ -3,6 +3,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from opentelemetry import trace
+
 from decomphose.config import load_frontier_models
 from decomphose.strategies.context import StrategyContext
 from decomphose.types import FrontierModelEntry, HarnessStrategy, StrategyResult, StrategyResultMeta
@@ -37,6 +39,10 @@ async def execute_accuracy_strategy(ctx: StrategyContext) -> StrategyResult:
 
     frontier = load_frontier_models()
     selected = _select_frontier_model(frontier.models, estimated_tokens)
+
+    span = trace.get_current_span()
+    span.set_attribute("harness.selected_model", selected.id)
+    span.set_attribute("harness.estimated_tokens", estimated_tokens)
 
     log_with_meta(
         log,

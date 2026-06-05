@@ -13,6 +13,7 @@ from decomphose.config import get_settings
 from decomphose.middleware.harness import parse_harness_strategy
 from decomphose.strategies import dispatch_strategy
 from decomphose.strategies.context import StrategyContext
+from decomphose.telemetry import configure_telemetry, get_tracer, shutdown_telemetry
 from decomphose.utils.errors import HarnessError
 from decomphose.utils.logging import log_with_meta
 
@@ -21,12 +22,14 @@ log = logging.getLogger("decomphose.server")
 
 def create_app(client: OpenRouterClient | None = None) -> FastAPI:
     settings = get_settings()
+    configure_telemetry(settings)
     upstream = client or OpenRouterClient(settings)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         yield
         await upstream.close()
+        shutdown_telemetry()
 
     app = FastAPI(title="Decomphose", version=__version__, lifespan=lifespan)
 
@@ -52,14 +55,20 @@ def create_app(client: OpenRouterClient | None = None) -> FastAPI:
                 },
             )
 
-            result = await dispatch_strategy(
-                StrategyContext(
-                    settings=settings,
-                    client=upstream,
-                    meta=meta,
-                    body=body,
+            with get_tracer().start_as_current_span("harness.request") as span:
+                span.set_attribute("harness.strategy", meta.strategy.value)
+                span.set_attribute("harness.request_id", meta.request_id)
+                span.set_attribute("harness.stream", bool(body.get("stream")))
+                span.set_attribute("harness.client_model", str(body.get("model") or ""))
+
+                result = await dispatch_strategy(
+                    StrategyContext(
+                        settings=settings,
+                        client=upstream,
+                        meta=meta,
+                        body=body,
+                    )
                 )
-            )
 
             response_headers = {
                 **result.headers,

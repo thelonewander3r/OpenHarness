@@ -38,6 +38,8 @@ class HarnessSettings(BaseSettings):
     harness_auditor_model: str = "anthropic/claude-3.5-haiku"
     harness_max_auditor_retries: int = 3
     harness_frontier_models_path: str = ""
+    harness_otel_enabled: bool = False
+    otel_exporter_otlp_endpoint: str = ""
 
 
 @lru_cache
