@@ -18,6 +18,7 @@ from decomphose.types import (
 from decomphose.utils.context_diet import extract_context_documents, slice_context_for_task
 from decomphose.utils.errors import MicroTaskError
 from decomphose.utils.logging import log_with_meta
+from decomphose.utils.streaming import sse_synthetic_completion
 
 log = logging.getLogger("decomphose.affordability")
 
@@ -121,25 +122,39 @@ async def execute_affordability_strategy(ctx: StrategyContext) -> StrategyResult
     )
 
     compiled = _compile_final_response(validated_outputs, user_prompt)
-    response_body = _build_synthetic_completion(
-        ctx.body.get("model") or "decomphose/affordability-compiled",
-        compiled,
+    model = ctx.body.get("model") or "decomphose/affordability-compiled"
+    headers = {
+        "x-harness-strategy": HarnessStrategy.AFFORDABILITY.value,
+        "x-harness-decomposition-steps": str(len(micro_tasks)),
+        "x-harness-auditor-retries": str(total_auditor_retries),
+    }
+    meta = StrategyResultMeta(
+        strategy=HarnessStrategy.AFFORDABILITY,
+        model_used=settings.harness_worker_model,
+        decomposition_steps=len(micro_tasks),
+        auditor_retries=total_auditor_retries,
     )
+
+    if ctx.body.get("stream"):
+        # The pipeline already ran to completion; replay the compiled result as SSE chunks
+        # so streaming clients work unchanged.
+        return StrategyResult(
+            status=200,
+            stream=sse_synthetic_completion(
+                completion_id=f"chatcmpl-harness-{int(time.time() * 1000)}",
+                created=int(time.time()),
+                model=model,
+                content=compiled,
+            ),
+            headers=headers,
+            meta=meta,
+        )
 
     return StrategyResult(
         status=200,
-        body=response_body,
-        headers={
-            "x-harness-strategy": HarnessStrategy.AFFORDABILITY.value,
-            "x-harness-decomposition-steps": str(len(micro_tasks)),
-            "x-harness-auditor-retries": str(total_auditor_retries),
-        },
-        meta=StrategyResultMeta(
-            strategy=HarnessStrategy.AFFORDABILITY,
-            model_used=settings.harness_worker_model,
-            decomposition_steps=len(micro_tasks),
-            auditor_retries=total_auditor_retries,
-        ),
+        body=_build_synthetic_completion(model, compiled),
+        headers=headers,
+        meta=meta,
     )
 
 
@@ -153,7 +168,7 @@ async def _decompose_master_task(
         f"[context:{d.key}]\n{d.content[:2000]}" for d in context_docs
     )
 
-    raw = client.complete(
+    raw = await client.complete(
         model=model,
         messages=[
             {"role": "system", "content": DECOMP_SYSTEM},
@@ -218,7 +233,7 @@ async def _run_micro_task_pipeline(
     max_retries = settings.harness_max_auditor_retries
 
     for attempt in range(1, max_retries + 2):
-        output = client.complete(
+        output = await client.complete(
             model=settings.harness_worker_model,
             messages=[
                 {"role": "system", "content": WORKER_SYSTEM},
@@ -237,7 +252,9 @@ async def _run_micro_task_pipeline(
             {"step": "goal-auditor", "taskId": task.id, "attempt": attempt},
         )
 
-        verdict = _audit_micro_task_output(client, settings.harness_auditor_model, task, output)
+        verdict = await _audit_micro_task_output(
+            client, settings.harness_auditor_model, task, output
+        )
 
         if isinstance(verdict, AuditorVerdictPass):
             log_with_meta(log, logging.INFO, "Auditor PASS", {"taskId": task.id, "attempt": attempt})
@@ -267,13 +284,13 @@ async def _run_micro_task_pipeline(
     raise MicroTaskError(task.id, "Exhausted auditor retry loop")
 
 
-def _audit_micro_task_output(
+async def _audit_micro_task_output(
     client: Any,
     model: str,
     task: MicroTask,
     output: str,
 ) -> AuditorVerdictPass | AuditorVerdictReject:
-    raw = client.complete(
+    raw = await client.complete(
         model=model,
         messages=[
             {"role": "system", "content": AUDITOR_SYSTEM},

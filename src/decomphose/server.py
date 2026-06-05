@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import logging
+from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from decomphose import __version__
 from decomphose.clients.openrouter import OpenRouterClient
@@ -18,17 +19,23 @@ from decomphose.utils.logging import log_with_meta
 log = logging.getLogger("decomphose.server")
 
 
-def create_app() -> FastAPI:
+def create_app(client: OpenRouterClient | None = None) -> FastAPI:
     settings = get_settings()
-    client = OpenRouterClient(settings)
-    app = FastAPI(title="Decomphose", version=__version__)
+    upstream = client or OpenRouterClient(settings)
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI):
+        yield
+        await upstream.close()
+
+    app = FastAPI(title="Decomphose", version=__version__, lifespan=lifespan)
 
     @app.get("/health")
     async def health() -> dict[str, str]:
         return {"status": "ok", "service": "decomphose", "version": __version__}
 
     @app.post("/v1/chat/completions")
-    async def chat_completions(request: Request) -> JSONResponse:
+    async def chat_completions(request: Request) -> Response:
         try:
             meta = parse_harness_strategy(request)
             body: dict[str, Any] = await request.json()
@@ -41,13 +48,14 @@ def create_app() -> FastAPI:
                     "requestId": meta.request_id,
                     "strategy": meta.strategy.value,
                     "clientModel": body.get("model"),
+                    "stream": bool(body.get("stream")),
                 },
             )
 
             result = await dispatch_strategy(
                 StrategyContext(
                     settings=settings,
-                    client=client,
+                    client=upstream,
                     meta=meta,
                     body=body,
                 )
@@ -57,6 +65,19 @@ def create_app() -> FastAPI:
                 **result.headers,
                 "x-harness-request-id": meta.request_id,
             }
+
+            if result.stream is not None:
+                return StreamingResponse(
+                    result.stream,
+                    status_code=result.status,
+                    media_type="text/event-stream",
+                    headers={
+                        **response_headers,
+                        "Cache-Control": "no-cache",
+                        "X-Accel-Buffering": "no",
+                    },
+                )
+
             return JSONResponse(
                 content=result.body,
                 status_code=result.status,

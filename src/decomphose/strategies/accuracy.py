@@ -11,6 +11,7 @@ from decomphose.utils.context_diet import (
     extract_context_documents,
 )
 from decomphose.utils.logging import log_with_meta
+from decomphose.utils.streaming import sse_passthrough
 
 log = logging.getLogger("decomphose.accuracy")
 
@@ -49,19 +50,31 @@ async def execute_accuracy_strategy(ctx: StrategyContext) -> StrategyResult:
     )
 
     routed_body = {**ctx.body, "model": selected.id}
-    completion = ctx.client.forward_raw(routed_body)
+    headers = {
+        "x-harness-selected-model": selected.id,
+        "x-harness-strategy": HarnessStrategy.ACCURACY.value,
+    }
+    meta = StrategyResultMeta(
+        strategy=HarnessStrategy.ACCURACY,
+        model_used=selected.id,
+    )
+
+    if ctx.body.get("stream"):
+        log_with_meta(log, logging.INFO, "Streaming passthrough", {"model": selected.id})
+        return StrategyResult(
+            status=200,
+            stream=sse_passthrough(ctx.client.stream_raw(routed_body)),
+            headers=headers,
+            meta=meta,
+        )
+
+    completion = await ctx.client.forward_raw(routed_body)
 
     return StrategyResult(
         status=200,
         body=completion.model_dump(),
-        headers={
-            "x-harness-selected-model": selected.id,
-            "x-harness-strategy": HarnessStrategy.ACCURACY.value,
-        },
-        meta=StrategyResultMeta(
-            strategy=HarnessStrategy.ACCURACY,
-            model_used=selected.id,
-        ),
+        headers=headers,
+        meta=meta,
     )
 
 

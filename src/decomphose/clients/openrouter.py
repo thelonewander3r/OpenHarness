@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from typing import Any
 
-from openai import OpenAI
-from openai.types.chat import ChatCompletion
+from openai import AsyncOpenAI
+from openai.types.chat import ChatCompletion, ChatCompletionChunk
 
 from decomphose.config import HarnessSettings
 from decomphose.utils.errors import StrategyError
@@ -14,7 +15,7 @@ class OpenRouterClient:
         self._settings = settings
         # Placeholder allows the proxy to boot for /health; upstream calls need a real key.
         api_key = settings.openrouter_api_key or "missing-configured-key"
-        self._client = OpenAI(
+        self._client = AsyncOpenAI(
             api_key=api_key,
             base_url=settings.openrouter_base_url,
             default_headers={
@@ -23,7 +24,7 @@ class OpenRouterClient:
             },
         )
 
-    def complete(
+    async def complete(
         self,
         *,
         model: str,
@@ -42,7 +43,7 @@ class OpenRouterClient:
             if response_format:
                 kwargs["response_format"] = response_format
 
-            response = self._client.chat.completions.create(**kwargs)
+            response = await self._client.chat.completions.create(**kwargs)
             content = response.choices[0].message.content
             if not content:
                 raise StrategyError("Upstream returned empty completion", "EMPTY_COMPLETION")
@@ -52,8 +53,20 @@ class OpenRouterClient:
         except Exception as exc:
             raise StrategyError("OpenRouter completion failed", "UPSTREAM_ERROR", cause=exc) from exc
 
-    def forward_raw(self, body: dict[str, Any]) -> ChatCompletion:
+    async def forward_raw(self, body: dict[str, Any]) -> ChatCompletion:
         try:
-            return self._client.chat.completions.create(**body)
+            # Non-streaming forward — streaming requests go through stream_raw.
+            return await self._client.chat.completions.create(**{**body, "stream": False})
         except Exception as exc:
             raise StrategyError("OpenRouter forward failed", "UPSTREAM_ERROR", cause=exc) from exc
+
+    async def stream_raw(self, body: dict[str, Any]) -> AsyncIterator[ChatCompletionChunk]:
+        try:
+            stream = await self._client.chat.completions.create(**{**body, "stream": True})
+        except Exception as exc:
+            raise StrategyError("OpenRouter stream failed", "UPSTREAM_ERROR", cause=exc) from exc
+        async for chunk in stream:
+            yield chunk
+
+    async def close(self) -> None:
+        await self._client.close()

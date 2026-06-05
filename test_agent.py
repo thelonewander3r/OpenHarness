@@ -19,6 +19,8 @@ except ImportError:
 
 HARNESS_URL = os.environ.get("HARNESS_URL", "http://127.0.0.1:3100")
 MOCK = os.environ.get("MOCK_AFFORDABILITY") == "1"
+STREAM = os.environ.get("STREAM") == "1"
+STRATEGY = os.environ.get("STRATEGY", "affordability")
 
 HEAVY_TASK = {
     "model": "openai/gpt-4o",
@@ -147,6 +149,44 @@ def run_live_affordability() -> None:
         print("\n... [truncated]")
 
 
+def run_live_streaming() -> None:
+    print(f"\n=== Decomphose Test Agent — {STRATEGY.upper()} (streaming) ===\n")
+    print(f"POST {HARNESS_URL}/v1/chat/completions  (stream: true)")
+    print(f"Header: X-Harness-Strategy: {STRATEGY}\n")
+
+    with httpx.Client(timeout=300.0) as client, client.stream(
+        "POST",
+        f"{HARNESS_URL}/v1/chat/completions",
+        headers={
+            "Content-Type": "application/json",
+            "X-Harness-Strategy": STRATEGY,
+        },
+        json={**HEAVY_TASK, "stream": True},
+    ) as res:
+        print("Response status:", res.status_code)
+        print(
+            "Harness headers:",
+            {
+                "strategy": res.headers.get("x-harness-strategy"),
+                "selectedModel": res.headers.get("x-harness-selected-model"),
+                "steps": res.headers.get("x-harness-decomposition-steps"),
+                "requestId": res.headers.get("x-harness-request-id"),
+            },
+        )
+        print("\n--- Streamed deltas ---\n")
+        for line in res.iter_lines():
+            if not line.startswith("data: "):
+                continue
+            payload = line[len("data: ") :]
+            if payload == "[DONE]":
+                print("\n\n[stream complete]")
+                break
+            chunk = json.loads(payload)
+            delta = (chunk.get("choices") or [{}])[0].get("delta", {})
+            sys.stdout.write(delta.get("content") or "")
+            sys.stdout.flush()
+
+
 def main() -> None:
     if MOCK:
         run_mock_pipeline_log()
@@ -166,7 +206,10 @@ def main() -> None:
         print("Or mock trace: MOCK_AFFORDABILITY=1 python test_agent.py")
         sys.exit(1)
 
-    run_live_affordability()
+    if STREAM:
+        run_live_streaming()
+    else:
+        run_live_affordability()
 
 
 if __name__ == "__main__":

@@ -47,7 +47,7 @@ Micro-task failures are **isolated** — one bad step does not crash the proxy.
 
 ## Status
 
-Early scaffolding (v0.1). Strategies are wired; production hardening (async upstream, streaming, observability) is planned.
+Early scaffolding (v0.1). Strategies are wired; upstream calls are fully async and `stream: true` is supported on both strategies. Remaining production hardening (observability, hot-reload registry) is planned.
 
 ---
 
@@ -120,6 +120,22 @@ More context...
 
 The affordability strategy slices these per micro-task. Without markers, the full thread is used as `full-thread`.
 
+### Streaming
+
+Set `"stream": true` in the request body (standard OpenAI shape):
+
+- **Accuracy** — true SSE passthrough: upstream `chat.completion.chunk` events are relayed as they arrive.
+- **Affordability** — the decompose → audit → compile pipeline runs to completion, then the compiled result is replayed as synthetic `chat.completion.chunk` SSE events, so streaming clients work unchanged.
+
+```bash
+# Streaming live test (server running + key in .env)
+# Windows PowerShell
+$env:STREAM="1"; $env:STRATEGY="accuracy"; python test_agent.py
+
+# macOS/Linux
+STREAM=1 STRATEGY=accuracy python test_agent.py
+```
+
 ---
 
 ## Project layout
@@ -130,10 +146,18 @@ src/decomphose/
   strategies/
     accuracy.py          # Precision Router
     affordability.py     # Decomposition sandbox
-  clients/openrouter.py
+  clients/openrouter.py  # Async OpenRouter client (complete / forward_raw / stream_raw)
   middleware/harness.py
+  utils/streaming.py     # SSE encoding (passthrough + synthetic chunk streams)
 config/frontier-models.json
+tests/test_streaming.py  # No-network smoke tests (fake upstream client)
 test_agent.py
+```
+
+Run the test suite:
+
+```bash
+pytest tests/
 ```
 
 ---
@@ -148,7 +172,7 @@ test_agent.py
 
 ## Roadmap
 
-- [ ] Async OpenRouter client + streaming passthrough
+- [x] Async OpenRouter client + streaming passthrough
 - [ ] Structured decomposition validation (Pydantic)
 - [ ] Pluggable model registry (hot reload)
 - [ ] OpenTelemetry traces per micro-task

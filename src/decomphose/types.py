@@ -75,7 +75,9 @@ class StrategyResultMeta(BaseModel):
 
 
 class StrategyResult(BaseModel):
-    body: Any
+    body: Any = None
     status: int = 200
     headers: dict[str, str] = Field(default_factory=dict)
     meta: StrategyResultMeta
+    # Async iterator of SSE-encoded strings; when set, the server streams it and ignores body.
+    stream: Any = None
