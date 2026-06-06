@@ -6,7 +6,7 @@ from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from decomphose.registry import ModelRegistry
-from decomphose.types import FrontierModelsConfig
+from decomphose.types import FrontierModelsConfig, WorkerModelsConfig
 
 
 def _resolve_project_root() -> Path:
@@ -20,6 +20,7 @@ def _resolve_project_root() -> Path:
 
 
 FRONTIER_CONFIG_PATH = _resolve_project_root() / "config" / "frontier-models.json"
+WORKER_CONFIG_PATH = _resolve_project_root() / "config" / "worker-models.json"
 
 
 class HarnessSettings(BaseSettings):
@@ -38,6 +39,7 @@ class HarnessSettings(BaseSettings):
     harness_auditor_model: str = "anthropic/claude-3.5-haiku"
     harness_max_auditor_retries: int = 3
     harness_frontier_models_path: str = ""
+    harness_worker_models_path: str = ""
     harness_otel_enabled: bool = False
     otel_exporter_otlp_endpoint: str = ""
 
@@ -68,5 +70,25 @@ def load_frontier_models() -> FrontierModelsConfig:
     return get_model_registry().load()
 
 
+def resolve_worker_registry_path(settings: HarnessSettings) -> Path:
+    if settings.harness_worker_models_path:
+        return Path(settings.harness_worker_models_path).expanduser().resolve()
+    return WORKER_CONFIG_PATH
+
+
+@lru_cache
+def get_worker_registry() -> ModelRegistry[WorkerModelsConfig]:
+    return ModelRegistry(resolve_worker_registry_path(get_settings()), WorkerModelsConfig)
+
+
+def load_worker_models() -> WorkerModelsConfig | None:
+    """Tiered worker pool, or None when no registry file exists (routing disabled)."""
+    registry = get_worker_registry()
+    if not registry.path.exists():
+        return None
+    return registry.load()
+
+
 def clear_frontier_cache() -> None:
     get_model_registry.cache_clear()
+    get_worker_registry.cache_clear()

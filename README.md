@@ -36,9 +36,9 @@ flowchart LR
 
 ### Affordability pipeline (4 steps)
 
-1. **Decomposition** — cheap model breaks the master task into linear micro-tasks (JSON, Pydantic-validated; one corrective retry on malformed output, then graceful fallback to a single master task).
+1. **Decomposition** — cheap model breaks the master task into linear micro-tasks (JSON, Pydantic-validated; one corrective retry on malformed output, then graceful fallback to a single master task), tagging each with a **complexity**: `routine | standard | complex`.
 2. **Context dieting** — each micro-task receives only `[context:key]` slices it needs.
-3. **Goal auditor loop** — cheap “auditor” model rejects weak outputs; worker retries with feedback (max 3).
+3. **Model routing + goal auditor loop** — each micro-task runs on the cheapest model in its complexity tier; the “auditor” model rejects weak outputs and each rejection **escalates one tier up** (worker retries with feedback, max 3).
 4. **Compilation** — validated segments merge into one OpenAI-shaped `chat.completion`.
 
 Micro-task failures are **isolated** — one bad step does not crash the proxy.
@@ -116,7 +116,8 @@ OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318
 | `HARNESS_HOST` | `0.0.0.0` | Bind address |
 | `HARNESS_PORT` | `3100` | Listen port |
 | `HARNESS_DECOMP_MODEL` | `anthropic/claude-3.5-haiku` | Decomposition model |
-| `HARNESS_WORKER_MODEL` | `deepseek/deepseek-chat` | Micro-task worker |
+| `HARNESS_WORKER_MODEL` | `deepseek/deepseek-chat` | Micro-task worker (fallback when routing is disabled) |
+| `HARNESS_WORKER_MODELS_PATH` | `config/worker-models.json` | Tiered worker registry for per-task routing |
 | `HARNESS_AUDITOR_MODEL` | `anthropic/claude-3.5-haiku` | Goal auditor |
 | `HARNESS_MAX_AUDITOR_RETRIES` | `3` | Auditor retry budget |
 | `HARNESS_FRONTIER_MODELS_PATH` | `config/frontier-models.json` | Custom frontier model registry path |
@@ -153,6 +154,17 @@ harness.request                  strategy, request id, client model, stream
 
 Accuracy requests record the selected frontier model and estimated tokens on the request span. Spans go to an OTLP/HTTP collector when `OTEL_EXPORTER_OTLP_ENDPOINT` is set (`pip install -e ".[otel]"`), otherwise to the console. Tracing off = zero overhead (no-op tracer).
 
+### Per-micro-task model routing
+
+Inspired by [Factory Router](https://factory.ai/news/factory-router): pick the right model for the right task, and escalate when the chosen model struggles.
+
+- The decomposition step classifies every micro-task as `routine`, `standard`, or `complex`.
+- `config/worker-models.json` defines tiered worker pools (hot-reloadable, like the frontier registry). Each task starts on the **cheapest model in its tier**.
+- An auditor REJECT escalates the retry to the **next tier up** instead of re-asking the same model — “if the selected model struggles, move to a more capable model.”
+- Inspect routing per response: `x-harness-router`, `x-harness-worker-models`, `x-harness-router-escalations` headers (and `router.escalate` span events in traces).
+
+Delete or repoint the registry (`HARNESS_WORKER_MODELS_PATH`) to disable routing — everything falls back to the static `HARNESS_WORKER_MODEL`.
+
 ### Streaming
 
 Set `"stream": true` in the request body (standard OpenAI shape):
@@ -179,7 +191,8 @@ src/decomphose/
   strategies/
     accuracy.py          # Precision Router
     affordability.py     # Decomposition sandbox
-  registry.py            # Hot-reloading frontier model registry
+  registry.py            # Hot-reloading model registries (frontier + worker tiers)
+  router.py              # Complexity tier -> worker model + escalation path
   telemetry.py           # OpenTelemetry setup (opt-in, OTLP or console)
   clients/openrouter.py  # Async OpenRouter client (complete / forward_raw / stream_raw)
   middleware/harness.py
@@ -213,6 +226,12 @@ pytest tests/
 - [x] Pluggable model registry (hot reload)
 - [x] OpenTelemetry traces per micro-task
 - [x] Docker Compose for local agent testing
+
+### v0.2
+
+- [x] Per-micro-task model routing with tier escalation (Factory Router-style)
+- [ ] Per-request cost accounting headers
+- [ ] Parallel micro-task execution for independent tasks
 
 ---
 

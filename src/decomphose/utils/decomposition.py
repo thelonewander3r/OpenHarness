@@ -67,6 +67,7 @@ def parse_decomposition_plan(raw: str) -> list[MicroTask]:
             index=index,
             title=item.title or f"Step {index + 1}",
             instruction=item.instruction,
+            complexity=item.complexity,
             relevant_context_keys=item.relevant_context_keys,
         )
         for index, item in enumerate(plan.micro_tasks[:MAX_MICRO_TASKS])

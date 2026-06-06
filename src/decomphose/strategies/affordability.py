@@ -19,6 +19,8 @@ from decomphose.types import (
     StrategyResult,
     StrategyResultMeta,
 )
+from decomphose.config import load_worker_models
+from decomphose.router import build_worker_escalation_path
 from decomphose.utils.context_diet import extract_context_documents, slice_context_for_task
 from decomphose.utils.decomposition import parse_decomposition_plan
 from decomphose.utils.errors import DecompositionError, MicroTaskError
@@ -34,6 +36,7 @@ DECOMP_SYSTEM = """You are a task decomposition engine. Given a complex user req
       "id": "task-1",
       "title": "short title",
       "instruction": "atomic instruction for one linear step",
+      "complexity": "routine | standard | complex",
       "relevantContextKeys": ["key-from-context-markers"]
     }
   ]
@@ -41,6 +44,7 @@ DECOMP_SYSTEM = """You are a task decomposition engine. Given a complex user req
 Rules:
 - Break the master task into 3-8 sequential micro-tasks.
 - Each micro-task must be independently executable in order.
+- Classify complexity honestly: "routine" = mechanical/boilerplate/extraction, "standard" = typical reasoning, "complex" = deep analysis, architecture, or multi-constraint reasoning. Most tasks are NOT complex.
 - Use relevantContextKeys to reference [context:key] markers when present; use ["full-thread"] if no markers exist.
 - Do not include markdown fences."""
 
@@ -95,26 +99,42 @@ async def execute_affordability_strategy(ctx: StrategyContext) -> StrategyResult
         },
     )
 
+    worker_config = load_worker_models()
     validated_outputs: list[str] = []
     total_auditor_retries = 0
+    total_escalations = 0
+    models_used: list[str] = []
 
     for task in micro_tasks:
+        worker_path = build_worker_escalation_path(
+            worker_config, task.complexity, settings.harness_worker_model
+        )
         with get_tracer().start_as_current_span("affordability.micro_task") as span:
             span.set_attribute("harness.task.id", task.id)
             span.set_attribute("harness.task.title", task.title)
+            span.set_attribute("harness.task.complexity", task.complexity)
             span.set_attribute("harness.task.context_keys", ",".join(task.relevant_context_keys))
             try:
-                output, retries = await _run_micro_task_pipeline(
-                    ctx.client, settings, task, context_docs
+                output, retries, task_models = await _run_micro_task_pipeline(
+                    ctx.client, settings, task, context_docs, worker_path
                 )
                 total_auditor_retries += retries
+                total_escalations += len(task_models) - 1
+                models_used.extend(m for m in task_models if m not in models_used)
                 span.set_attribute("harness.auditor_retries", retries)
+                span.set_attribute("harness.task.models", ",".join(task_models))
                 validated_outputs.append(f"## {task.title}\n\n{output}")
                 log_with_meta(
                     log,
                     logging.INFO,
                     "Micro-task validated",
-                    {"step": "micro-task-complete", "taskId": task.id, "auditorRetries": retries},
+                    {
+                        "step": "micro-task-complete",
+                        "taskId": task.id,
+                        "auditorRetries": retries,
+                        "complexity": task.complexity,
+                        "models": task_models,
+                    },
                 )
             except MicroTaskError as exc:
                 span.set_status(StatusCode.ERROR, exc.message)
@@ -141,10 +161,14 @@ async def execute_affordability_strategy(ctx: StrategyContext) -> StrategyResult
         "x-harness-strategy": HarnessStrategy.AFFORDABILITY.value,
         "x-harness-decomposition-steps": str(len(micro_tasks)),
         "x-harness-auditor-retries": str(total_auditor_retries),
+        "x-harness-router": "enabled" if worker_config else "disabled",
+        "x-harness-worker-models": ",".join(models_used),
+        "x-harness-router-escalations": str(total_escalations),
     }
     meta = StrategyResultMeta(
         strategy=HarnessStrategy.AFFORDABILITY,
-        model_used=settings.harness_worker_model,
+        model_used=models_used[0] if models_used else settings.harness_worker_model,
+        models_used=models_used,
         decomposition_steps=len(micro_tasks),
         auditor_retries=total_auditor_retries,
     )
@@ -253,7 +277,8 @@ async def _run_micro_task_pipeline(
     settings: Any,
     task: MicroTask,
     context_docs: list[ContextDocument],
-) -> tuple[str, int]:
+    worker_path: list[str],
+) -> tuple[str, int, list[str]]:
     context_slice = slice_context_for_task(context_docs, task)
 
     log_with_meta(
@@ -271,10 +296,28 @@ async def _run_micro_task_pipeline(
     last_feedback = ""
     retries = 0
     max_retries = settings.harness_max_auditor_retries
+    models_used: list[str] = []
 
     for attempt in range(1, max_retries + 2):
+        # Router escalation: each auditor rejection moves one tier up the path;
+        # past the top of the path we keep retrying the most capable model.
+        model = worker_path[min(attempt - 1, len(worker_path) - 1)]
+        if not models_used:
+            models_used.append(model)
+        elif models_used[-1] != model:
+            models_used.append(model)
+            trace.get_current_span().add_event(
+                "router.escalate", {"attempt": attempt, "model": model}
+            )
+            log_with_meta(
+                log,
+                logging.INFO,
+                "Router escalation — retrying on more capable model",
+                {"taskId": task.id, "attempt": attempt, "model": model},
+            )
+
         output = await client.complete(
-            model=settings.harness_worker_model,
+            model=model,
             messages=[
                 {"role": "system", "content": WORKER_SYSTEM},
                 {
@@ -299,7 +342,7 @@ async def _run_micro_task_pipeline(
         if isinstance(verdict, AuditorVerdictPass):
             trace.get_current_span().add_event("auditor.pass", {"attempt": attempt})
             log_with_meta(log, logging.INFO, "Auditor PASS", {"taskId": task.id, "attempt": attempt})
-            return output, retries
+            return output, retries, models_used
 
         retries += 1
         last_feedback = verdict.feedback

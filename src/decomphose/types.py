@@ -37,16 +37,41 @@ class FrontierModelsConfig(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class WorkerModelEntry(BaseModel):
+    id: str
+    tier: str
+    cost_rank: int = Field(alias="costRank")
+    notes: str | None = None
+
+    model_config = {"populate_by_name": True}
+
+
+class WorkerModelsConfig(BaseModel):
+    """Tiered worker pool for per-micro-task routing (cheapest tier first)."""
+
+    version: int
+    updated_at: str = Field(alias="updatedAt")
+    tiers: list[str]
+    models: list[WorkerModelEntry]
+
+    model_config = {"populate_by_name": True}
+
+
 class MicroTask(BaseModel):
     id: str
     index: int = 0
     title: str
     instruction: str
+    complexity: str = "standard"
     relevant_context_keys: list[str] = Field(
         default_factory=list, alias="relevantContextKeys"
     )
 
     model_config = {"populate_by_name": True}
+
+
+TASK_COMPLEXITIES = ("routine", "standard", "complex")
+DEFAULT_COMPLEXITY = "standard"
 
 
 class DecomposedMicroTask(BaseModel):
@@ -55,6 +80,7 @@ class DecomposedMicroTask(BaseModel):
     id: str | None = None
     title: str | None = None
     instruction: str
+    complexity: str = DEFAULT_COMPLEXITY
     relevant_context_keys: list[str] = Field(
         default_factory=list, alias="relevantContextKeys"
     )
@@ -68,6 +94,14 @@ class DecomposedMicroTask(BaseModel):
         if not stripped:
             raise ValueError("instruction must be a non-empty string")
         return stripped
+
+    @field_validator("complexity", mode="before")
+    @classmethod
+    def _normalize_complexity(cls, value: object) -> str:
+        # A bad label must never fail the whole plan — coerce to the default tier.
+        if isinstance(value, str) and value.strip().lower() in TASK_COMPLEXITIES:
+            return value.strip().lower()
+        return DEFAULT_COMPLEXITY
 
 
 class DecompositionPlan(BaseModel):
@@ -101,6 +135,7 @@ AuditorVerdict = AuditorVerdictPass | AuditorVerdictReject
 class StrategyResultMeta(BaseModel):
     strategy: HarnessStrategy
     model_used: str | None = None
+    models_used: list[str] | None = None
     decomposition_steps: int | None = None
     auditor_retries: int | None = None
 

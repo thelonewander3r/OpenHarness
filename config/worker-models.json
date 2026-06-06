@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "updatedAt": "2026-06-05",
+  "tiers": ["routine", "standard", "complex"],
+  "models": [
+    {
+      "id": "meta-llama/llama-3.3-70b-instruct",
+      "tier": "routine",
+      "costRank": 1,
+      "notes": "Mechanical work: formatting, extraction, boilerplate"
+    },
+    {
+      "id": "anthropic/claude-3.5-haiku",
+      "tier": "routine",
+      "costRank": 2,
+      "notes": "Fast routine alternative"
+    },
+    {
+      "id": "deepseek/deepseek-chat",
+      "tier": "standard",
+      "costRank": 3,
+      "notes": "Default worker: typical reasoning micro-tasks"
+    },
+    {
+      "id": "anthropic/claude-3.5-sonnet",
+      "tier": "complex",
+      "costRank": 8,
+      "notes": "Deep analysis, architecture, multi-constraint reasoning"
+    }
+  ]
+}
