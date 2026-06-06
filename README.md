@@ -37,9 +37,9 @@ flowchart LR
 ### Affordability pipeline (4 steps)
 
 1. **Decomposition** — cheap model breaks the master task into linear micro-tasks (JSON, Pydantic-validated; one corrective retry on malformed output, then graceful fallback to a single master task), tagging each with a **complexity**: `routine | standard | complex`.
-2. **Context dieting** — each micro-task receives only `[context:key]` slices it needs.
-3. **Model routing + goal auditor loop** — each micro-task runs on the cheapest model in its complexity tier; the “auditor” model rejects weak outputs and each rejection **escalates one tier up** (worker retries with feedback, max 3).
-4. **Compilation** — validated segments merge into one OpenAI-shaped `chat.completion`.
+2. **Context dieting** — each micro-task receives only `[context:key]` slices it needs, plus the outputs of micro-tasks it declares in `dependsOn`.
+3. **Model routing + goal auditor loop** — micro-tasks run in **dependency waves** (independent tasks execute concurrently, capped by `HARNESS_MAX_PARALLEL_MICRO_TASKS`); each runs on the cheapest model in its complexity tier; the “auditor” model rejects weak outputs and each rejection **escalates one tier up** (worker retries with feedback, max 3).
+4. **Compilation** — validated segments merge in original order into one OpenAI-shaped `chat.completion`.
 
 Micro-task failures are **isolated** — one bad step does not crash the proxy.
 
@@ -121,6 +121,7 @@ OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318
 | `HARNESS_MODEL_PRICING_PATH` | `config/model-pricing.json` | $/Mtok pricing table for cost accounting |
 | `HARNESS_AUDITOR_MODEL` | `anthropic/claude-3.5-haiku` | Goal auditor |
 | `HARNESS_MAX_AUDITOR_RETRIES` | `3` | Auditor retry budget |
+| `HARNESS_MAX_PARALLEL_MICRO_TASKS` | `4` | Concurrent micro-task cap per request |
 | `HARNESS_FRONTIER_MODELS_PATH` | `config/frontier-models.json` | Custom frontier model registry path |
 | `HARNESS_OTEL_ENABLED` | `false` | Enable OpenTelemetry tracing |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | — | OTLP/HTTP collector endpoint (requires `decomphose[otel]`); console exporter if unset |
@@ -162,7 +163,8 @@ Inspired by [Factory Router](https://factory.ai/news/factory-router): pick the r
 - The decomposition step classifies every micro-task as `routine`, `standard`, or `complex`.
 - `config/worker-models.json` defines tiered worker pools (hot-reloadable, like the frontier registry). Each task starts on the **cheapest model in its tier**.
 - An auditor REJECT escalates the retry to the **next tier up** instead of re-asking the same model — “if the selected model struggles, move to a more capable model.”
-- Inspect routing per response: `x-harness-router`, `x-harness-worker-models`, `x-harness-router-escalations` headers (and `router.escalate` span events in traces).
+- Inspect routing per response: `x-harness-router`, `x-harness-worker-models`, `x-harness-router-escalations`, `x-harness-parallel-waves` headers (and `router.escalate` span events in traces).
+- Decomposition declares `dependsOn` per micro-task; self/forward/unknown references are pruned so the schedule is always a DAG. Independent tasks run concurrently; dependents wait for their prerequisites and receive those outputs in their prompt. A failed prerequisite never blocks its dependents.
 
 Delete or repoint the registry (`HARNESS_WORKER_MODELS_PATH`) to disable routing — everything falls back to the static `HARNESS_WORKER_MODEL`.
 
@@ -246,7 +248,7 @@ pytest tests/
 
 - [x] Per-micro-task model routing with tier escalation (Factory Router-style)
 - [x] Per-request cost accounting headers
-- [ ] Parallel micro-task execution for independent tasks
+- [x] Parallel micro-task execution for independent tasks
 
 ---
 

@@ -39,6 +39,7 @@ class HarnessSettings(BaseSettings):
     harness_worker_model: str = "deepseek/deepseek-chat"
     harness_auditor_model: str = "anthropic/claude-3.5-haiku"
     harness_max_auditor_retries: int = 3
+    harness_max_parallel_micro_tasks: int = 4
     harness_frontier_models_path: str = ""
     harness_worker_models_path: str = ""
     harness_model_pricing_path: str = ""

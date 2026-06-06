@@ -81,6 +81,7 @@ class MicroTask(BaseModel):
     title: str
     instruction: str
     complexity: str = "standard"
+    depends_on: list[str] = Field(default_factory=list, alias="dependsOn")
     relevant_context_keys: list[str] = Field(
         default_factory=list, alias="relevantContextKeys"
     )
@@ -99,6 +100,7 @@ class DecomposedMicroTask(BaseModel):
     title: str | None = None
     instruction: str
     complexity: str = DEFAULT_COMPLEXITY
+    depends_on: list[str] = Field(default_factory=list, alias="dependsOn")
     relevant_context_keys: list[str] = Field(
         default_factory=list, alias="relevantContextKeys"
     )
@@ -112,6 +114,14 @@ class DecomposedMicroTask(BaseModel):
         if not stripped:
             raise ValueError("instruction must be a non-empty string")
         return stripped
+
+    @field_validator("depends_on", mode="before")
+    @classmethod
+    def _normalize_depends_on(cls, value: object) -> list[str]:
+        # Malformed dependency lists degrade to "independent", never fail the plan.
+        if not isinstance(value, list):
+            return []
+        return [v for v in value if isinstance(v, str) and v.strip()]
 
     @field_validator("complexity", mode="before")
     @classmethod

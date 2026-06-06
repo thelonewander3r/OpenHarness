@@ -61,14 +61,29 @@ def parse_decomposition_plan(raw: str) -> list[MicroTask]:
             {"produced": len(plan.micro_tasks), "kept": MAX_MICRO_TASKS},
         )
 
-    return [
-        MicroTask(
-            id=item.id or f"task-{index + 1}",
-            index=index,
-            title=item.title or f"Step {index + 1}",
-            instruction=item.instruction,
-            complexity=item.complexity,
-            relevant_context_keys=item.relevant_context_keys,
+    result: list[MicroTask] = []
+    seen_ids: set[str] = set()
+    for index, item in enumerate(plan.micro_tasks[:MAX_MICRO_TASKS]):
+        task_id = item.id or f"task-{index + 1}"
+        if task_id in seen_ids:
+            base = f"task-{index + 1}"
+            task_id, suffix = base, 1
+            while task_id in seen_ids:
+                suffix += 1
+                task_id = f"{base}-{suffix}"
+        # Dependencies may only reference EARLIER tasks — self/forward/unknown
+        # refs are dropped so the schedule is always a DAG (no deadlock possible).
+        depends_on = list(dict.fromkeys(d for d in item.depends_on if d in seen_ids))
+        seen_ids.add(task_id)
+        result.append(
+            MicroTask(
+                id=task_id,
+                index=index,
+                title=item.title or f"Step {index + 1}",
+                instruction=item.instruction,
+                complexity=item.complexity,
+                depends_on=depends_on,
+                relevant_context_keys=item.relevant_context_keys,
+            )
         )
-        for index, item in enumerate(plan.micro_tasks[:MAX_MICRO_TASKS])
-    ]
+    return result

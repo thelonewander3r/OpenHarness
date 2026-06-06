@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -38,13 +39,14 @@ DECOMP_SYSTEM = """You are a task decomposition engine. Given a complex user req
       "title": "short title",
       "instruction": "atomic instruction for one linear step",
       "complexity": "routine | standard | complex",
+      "dependsOn": [],
       "relevantContextKeys": ["key-from-context-markers"]
     }
   ]
 }
 Rules:
-- Break the master task into 3-8 sequential micro-tasks.
-- Each micro-task must be independently executable in order.
+- Break the master task into 3-8 micro-tasks.
+- Use dependsOn to list ids of EARLIER micro-tasks whose output this step truly needs; keep it empty for independent steps so they can run in parallel.
 - Classify complexity honestly: "routine" = mechanical/boilerplate/extraction, "standard" = typical reasoning, "complex" = deep analysis, architecture, or multi-constraint reasoning. Most tasks are NOT complex.
 - Use relevantContextKeys to reference [context:key] markers when present; use ["full-thread"] if no markers exist.
 - Do not include markdown fences."""
@@ -101,53 +103,100 @@ async def execute_affordability_strategy(ctx: StrategyContext) -> StrategyResult
     )
 
     worker_config = load_worker_models()
-    validated_outputs: list[str] = []
+    tasks_by_id = {t.id: t for t in micro_tasks}
+    outputs_by_id: dict[str, str] = {}
+    failed_ids: set[str] = set()
     total_auditor_retries = 0
     total_escalations = 0
     models_used: list[str] = []
+    semaphore = asyncio.Semaphore(max(1, settings.harness_max_parallel_micro_tasks))
 
-    for task in micro_tasks:
-        worker_path = build_worker_escalation_path(
-            worker_config, task.complexity, settings.harness_worker_model
-        )
-        with get_tracer().start_as_current_span("affordability.micro_task") as span:
-            span.set_attribute("harness.task.id", task.id)
-            span.set_attribute("harness.task.title", task.title)
-            span.set_attribute("harness.task.complexity", task.complexity)
-            span.set_attribute("harness.task.context_keys", ",".join(task.relevant_context_keys))
-            try:
-                output, retries, task_models = await _run_micro_task_pipeline(
-                    ctx.client, settings, task, context_docs, worker_path
+    async def run_one(task: MicroTask, wave: int) -> dict[str, Any]:
+        async with semaphore:
+            with get_tracer().start_as_current_span("affordability.micro_task") as span:
+                span.set_attribute("harness.task.id", task.id)
+                span.set_attribute("harness.task.title", task.title)
+                span.set_attribute("harness.task.complexity", task.complexity)
+                span.set_attribute("harness.task.wave", wave)
+                span.set_attribute("harness.task.depends_on", ",".join(task.depends_on))
+                span.set_attribute(
+                    "harness.task.context_keys", ",".join(task.relevant_context_keys)
                 )
-                total_auditor_retries += retries
-                total_escalations += len(task_models) - 1
-                models_used.extend(m for m in task_models if m not in models_used)
-                span.set_attribute("harness.auditor_retries", retries)
-                span.set_attribute("harness.task.models", ",".join(task_models))
-                validated_outputs.append(f"## {task.title}\n\n{output}")
-                log_with_meta(
-                    log,
-                    logging.INFO,
-                    "Micro-task validated",
-                    {
-                        "step": "micro-task-complete",
-                        "taskId": task.id,
-                        "auditorRetries": retries,
-                        "complexity": task.complexity,
+                worker_path = build_worker_escalation_path(
+                    worker_config, task.complexity, settings.harness_worker_model
+                )
+                dependency_outputs = [
+                    f"### {tasks_by_id[dep].title}\n{outputs_by_id[dep]}"
+                    for dep in task.depends_on
+                    if dep in outputs_by_id and dep not in failed_ids
+                ]
+                try:
+                    output, retries, task_models = await _run_micro_task_pipeline(
+                        ctx.client, settings, task, context_docs, worker_path, dependency_outputs
+                    )
+                    span.set_attribute("harness.auditor_retries", retries)
+                    span.set_attribute("harness.task.models", ",".join(task_models))
+                    log_with_meta(
+                        log,
+                        logging.INFO,
+                        "Micro-task validated",
+                        {
+                            "step": "micro-task-complete",
+                            "taskId": task.id,
+                            "wave": wave,
+                            "auditorRetries": retries,
+                            "complexity": task.complexity,
+                            "models": task_models,
+                        },
+                    )
+                    return {
+                        "task": task,
+                        "output": output,
+                        "retries": retries,
                         "models": task_models,
-                    },
-                )
-            except MicroTaskError as exc:
-                span.set_status(StatusCode.ERROR, exc.message)
-                log_with_meta(
-                    log,
-                    logging.ERROR,
-                    "Micro-task failed (isolated)",
-                    {"taskId": task.id, "error": exc.message},
-                )
-                validated_outputs.append(
-                    f"## {task.title}\n\n[HARNESS: micro-task failed after retries — {exc.message}]"
-                )
+                        "failed": False,
+                    }
+                except MicroTaskError as exc:
+                    span.set_status(StatusCode.ERROR, exc.message)
+                    log_with_meta(
+                        log,
+                        logging.ERROR,
+                        "Micro-task failed (isolated)",
+                        {"taskId": task.id, "error": exc.message},
+                    )
+                    return {
+                        "task": task,
+                        "output": (
+                            f"[HARNESS: micro-task failed after retries — {exc.message}]"
+                        ),
+                        "retries": 0,
+                        "models": [],
+                        "failed": True,
+                    }
+
+    # Wave scheduler: every task whose dependencies are satisfied runs concurrently.
+    done_ids: set[str] = set()
+    remaining = list(micro_tasks)
+    wave_count = 0
+    while remaining:
+        ready = [t for t in remaining if set(t.depends_on) <= done_ids]
+        if not ready:  # Unreachable after dep sanitization, but never deadlock.
+            ready = [remaining[0]]
+        wave_count += 1
+        wave_results = await asyncio.gather(*(run_one(t, wave_count) for t in ready))
+        for item in wave_results:
+            task = item["task"]
+            outputs_by_id[task.id] = item["output"]
+            if item["failed"]:
+                failed_ids.add(task.id)
+            total_auditor_retries += item["retries"]
+            total_escalations += max(0, len(item["models"]) - 1)
+            models_used.extend(m for m in item["models"] if m not in models_used)
+        done_ids |= {t.id for t in ready}
+        remaining = [t for t in remaining if t.id not in done_ids]
+
+    # Compile in original decomposition order regardless of completion order.
+    validated_outputs = [f"## {t.title}\n\n{outputs_by_id[t.id]}" for t in micro_tasks]
 
     log_with_meta(
         log,
@@ -165,6 +214,7 @@ async def execute_affordability_strategy(ctx: StrategyContext) -> StrategyResult
         "x-harness-router": "enabled" if worker_config else "disabled",
         "x-harness-worker-models": ",".join(models_used),
         "x-harness-router-escalations": str(total_escalations),
+        "x-harness-parallel-waves": str(wave_count),
     }
     meta = StrategyResultMeta(
         strategy=HarnessStrategy.AFFORDABILITY,
@@ -279,6 +329,7 @@ async def _run_micro_task_pipeline(
     task: MicroTask,
     context_docs: list[ContextDocument],
     worker_path: list[str],
+    dependency_outputs: list[str],
 ) -> tuple[str, int, list[str]]:
     context_slice = slice_context_for_task(context_docs, task)
 
@@ -323,7 +374,9 @@ async def _run_micro_task_pipeline(
                 {"role": "system", "content": WORKER_SYSTEM},
                 {
                     "role": "user",
-                    "content": _build_worker_user_message(task, context_slice, last_feedback),
+                    "content": _build_worker_user_message(
+                        task, context_slice, dependency_outputs, last_feedback
+                    ),
                 },
             ],
             temperature=0.3,
@@ -407,6 +460,7 @@ async def _audit_micro_task_output(
 def _build_worker_user_message(
     task: MicroTask,
     context_slice: str,
+    dependency_outputs: list[str],
     retry_feedback: str,
 ) -> str:
     parts = [
@@ -414,6 +468,8 @@ def _build_worker_user_message(
         f"Instruction: {task.instruction}",
         f"Context slice:\n{context_slice}",
     ]
+    if dependency_outputs:
+        parts.append("Outputs from prerequisite steps:\n\n" + "\n\n".join(dependency_outputs))
     if retry_feedback:
         parts.append(
             "Previous attempt was rejected by the Goal Auditor. Fix these issues:\n"
