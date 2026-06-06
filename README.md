@@ -118,6 +118,7 @@ OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318
 | `HARNESS_DECOMP_MODEL` | `anthropic/claude-3.5-haiku` | Decomposition model |
 | `HARNESS_WORKER_MODEL` | `deepseek/deepseek-chat` | Micro-task worker (fallback when routing is disabled) |
 | `HARNESS_WORKER_MODELS_PATH` | `config/worker-models.json` | Tiered worker registry for per-task routing |
+| `HARNESS_MODEL_PRICING_PATH` | `config/model-pricing.json` | $/Mtok pricing table for cost accounting |
 | `HARNESS_AUDITOR_MODEL` | `anthropic/claude-3.5-haiku` | Goal auditor |
 | `HARNESS_MAX_AUDITOR_RETRIES` | `3` | Auditor retry budget |
 | `HARNESS_FRONTIER_MODELS_PATH` | `config/frontier-models.json` | Custom frontier model registry path |
@@ -165,6 +166,19 @@ Inspired by [Factory Router](https://factory.ai/news/factory-router): pick the r
 
 Delete or repoint the registry (`HARNESS_WORKER_MODELS_PATH`) to disable routing — everything falls back to the static `HARNESS_WORKER_MODEL`.
 
+### Cost accounting
+
+Every response reports what it actually consumed upstream:
+
+| Header | Meaning |
+|--------|---------|
+| `x-harness-llm-calls` | Upstream LLM calls made for this request |
+| `x-harness-prompt-tokens` / `x-harness-completion-tokens` | Total tokens across all calls |
+| `x-harness-cost-usd` | Estimated spend from `config/model-pricing.json` |
+| `x-harness-cost-coverage` | `full` / `partial` / `none` — how much of the spend is priced |
+
+The affordability strategy's compiled response also carries real aggregate `usage` (decomposition + workers + auditors). The pricing table is hot-reloadable like the other registries. Compare `x-harness-cost-usd` across strategies on the same prompt to measure what the router saves. (Accuracy streaming responses omit cost headers — usage isn't known until after headers are sent.)
+
 ### Streaming
 
 Set `"stream": true` in the request body (standard OpenAI shape):
@@ -191,8 +205,9 @@ src/decomphose/
   strategies/
     accuracy.py          # Precision Router
     affordability.py     # Decomposition sandbox
-  registry.py            # Hot-reloading model registries (frontier + worker tiers)
+  registry.py            # Hot-reloading model registries (frontier / worker tiers / pricing)
   router.py              # Complexity tier -> worker model + escalation path
+  accounting.py          # Per-request usage ledger + cost headers
   telemetry.py           # OpenTelemetry setup (opt-in, OTLP or console)
   clients/openrouter.py  # Async OpenRouter client (complete / forward_raw / stream_raw)
   middleware/harness.py
@@ -230,7 +245,7 @@ pytest tests/
 ### v0.2
 
 - [x] Per-micro-task model routing with tier escalation (Factory Router-style)
-- [ ] Per-request cost accounting headers
+- [x] Per-request cost accounting headers
 - [ ] Parallel micro-task execution for independent tasks
 
 ---

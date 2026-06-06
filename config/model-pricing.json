@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "updatedAt": "2026-06-05",
+  "models": [
+    { "id": "anthropic/claude-3.5-haiku", "promptPerMtok": 0.8, "completionPerMtok": 4.0 },
+    { "id": "anthropic/claude-3.5-sonnet", "promptPerMtok": 3.0, "completionPerMtok": 15.0 },
+    { "id": "anthropic/claude-3.5-opus", "promptPerMtok": 15.0, "completionPerMtok": 75.0 },
+    { "id": "deepseek/deepseek-chat", "promptPerMtok": 0.14, "completionPerMtok": 0.28 },
+    { "id": "meta-llama/llama-3.3-70b-instruct", "promptPerMtok": 0.12, "completionPerMtok": 0.3 },
+    { "id": "openai/o1", "promptPerMtok": 15.0, "completionPerMtok": 60.0 },
+    { "id": "openai/gpt-4o", "promptPerMtok": 2.5, "completionPerMtok": 10.0 },
+    { "id": "google/gemini-2.0-flash-thinking-exp", "promptPerMtok": 0.1, "completionPerMtok": 0.4 }
+  ]
+}

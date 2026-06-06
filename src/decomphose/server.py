@@ -8,8 +8,9 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from decomphose import __version__
+from decomphose.accounting import start_ledger
 from decomphose.clients.openrouter import OpenRouterClient
-from decomphose.config import get_settings
+from decomphose.config import get_settings, load_model_pricing
 from decomphose.middleware.harness import parse_harness_strategy
 from decomphose.strategies import dispatch_strategy
 from decomphose.strategies.context import StrategyContext
@@ -55,6 +56,8 @@ def create_app(client: OpenRouterClient | None = None) -> FastAPI:
                 },
             )
 
+            ledger = start_ledger(load_model_pricing())
+
             with get_tracer().start_as_current_span("harness.request") as span:
                 span.set_attribute("harness.strategy", meta.strategy.value)
                 span.set_attribute("harness.request_id", meta.request_id)
@@ -70,8 +73,16 @@ def create_app(client: OpenRouterClient | None = None) -> FastAPI:
                     )
                 )
 
+                if ledger.entries:
+                    span.set_attribute("harness.llm_calls", ledger.llm_calls)
+                    span.set_attribute("harness.tokens.prompt", ledger.prompt_tokens)
+                    span.set_attribute("harness.tokens.completion", ledger.completion_tokens)
+                    if ledger.coverage != "none":
+                        span.set_attribute("harness.cost_usd", round(ledger.cost_usd, 6))
+
             response_headers = {
                 **result.headers,
+                **ledger.headers(),
                 "x-harness-request-id": meta.request_id,
             }
 

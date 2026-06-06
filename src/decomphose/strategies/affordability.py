@@ -19,6 +19,7 @@ from decomphose.types import (
     StrategyResult,
     StrategyResultMeta,
 )
+from decomphose.accounting import current_ledger
 from decomphose.config import load_worker_models
 from decomphose.router import build_worker_escalation_path
 from decomphose.utils.context_diet import extract_context_documents, slice_context_for_task
@@ -428,6 +429,10 @@ def _compile_final_response(segments: list[str], user_prompt: str) -> str:
 
 
 def _build_synthetic_completion(model: str, content: str) -> dict[str, Any]:
+    # Aggregate real upstream usage across the whole pipeline (decomp + workers + auditors).
+    ledger = current_ledger()
+    prompt_tokens = ledger.prompt_tokens if ledger else 0
+    completion_tokens = ledger.completion_tokens if ledger else 0
     return {
         "id": f"chatcmpl-harness-{int(time.time() * 1000)}",
         "object": "chat.completion",
@@ -440,7 +445,11 @@ def _build_synthetic_completion(model: str, content: str) -> dict[str, Any]:
                 "finish_reason": "stop",
             }
         ],
-        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        "usage": {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": prompt_tokens + completion_tokens,
+        },
     }
 
 

@@ -57,6 +57,24 @@ class WorkerModelsConfig(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class ModelPriceEntry(BaseModel):
+    id: str
+    prompt_per_mtok: float = Field(alias="promptPerMtok")
+    completion_per_mtok: float = Field(alias="completionPerMtok")
+
+    model_config = {"populate_by_name": True}
+
+
+class ModelPricingConfig(BaseModel):
+    """USD prices per million tokens, used for per-request cost accounting."""
+
+    version: int
+    updated_at: str = Field(alias="updatedAt")
+    models: list[ModelPriceEntry]
+
+    model_config = {"populate_by_name": True}
+
+
 class MicroTask(BaseModel):
     id: str
     index: int = 0

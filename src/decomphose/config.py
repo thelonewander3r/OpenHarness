@@ -6,7 +6,7 @@ from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from decomphose.registry import ModelRegistry
-from decomphose.types import FrontierModelsConfig, WorkerModelsConfig
+from decomphose.types import FrontierModelsConfig, ModelPricingConfig, WorkerModelsConfig
 
 
 def _resolve_project_root() -> Path:
@@ -21,6 +21,7 @@ def _resolve_project_root() -> Path:
 
 FRONTIER_CONFIG_PATH = _resolve_project_root() / "config" / "frontier-models.json"
 WORKER_CONFIG_PATH = _resolve_project_root() / "config" / "worker-models.json"
+PRICING_CONFIG_PATH = _resolve_project_root() / "config" / "model-pricing.json"
 
 
 class HarnessSettings(BaseSettings):
@@ -40,6 +41,7 @@ class HarnessSettings(BaseSettings):
     harness_max_auditor_retries: int = 3
     harness_frontier_models_path: str = ""
     harness_worker_models_path: str = ""
+    harness_model_pricing_path: str = ""
     harness_otel_enabled: bool = False
     otel_exporter_otlp_endpoint: str = ""
 
@@ -89,6 +91,26 @@ def load_worker_models() -> WorkerModelsConfig | None:
     return registry.load()
 
 
+def resolve_pricing_registry_path(settings: HarnessSettings) -> Path:
+    if settings.harness_model_pricing_path:
+        return Path(settings.harness_model_pricing_path).expanduser().resolve()
+    return PRICING_CONFIG_PATH
+
+
+@lru_cache
+def get_pricing_registry() -> ModelRegistry[ModelPricingConfig]:
+    return ModelRegistry(resolve_pricing_registry_path(get_settings()), ModelPricingConfig)
+
+
+def load_model_pricing() -> ModelPricingConfig | None:
+    """Model pricing table, or None when no pricing file exists (cost unknown)."""
+    registry = get_pricing_registry()
+    if not registry.path.exists():
+        return None
+    return registry.load()
+
+
 def clear_frontier_cache() -> None:
     get_model_registry.cache_clear()
     get_worker_registry.cache_clear()
+    get_pricing_registry.cache_clear()

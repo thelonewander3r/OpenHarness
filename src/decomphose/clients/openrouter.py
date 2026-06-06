@@ -6,9 +6,21 @@ from typing import Any
 from openai import AsyncOpenAI
 from openai.types.chat import ChatCompletion, ChatCompletionChunk
 
+from decomphose.accounting import current_ledger
 from decomphose.config import HarnessSettings
 from decomphose.telemetry import get_tracer
 from decomphose.utils.errors import StrategyError
+
+
+def _record_usage(model: str, response: Any) -> None:
+    ledger = current_ledger()
+    usage = getattr(response, "usage", None)
+    if ledger is not None and usage is not None:
+        ledger.record(
+            model,
+            usage.prompt_tokens or 0,
+            usage.completion_tokens or 0,
+        )
 
 
 class OpenRouterClient:
@@ -47,6 +59,7 @@ class OpenRouterClient:
                     kwargs["response_format"] = response_format
 
                 response = await self._client.chat.completions.create(**kwargs)
+                _record_usage(model, response)
                 content = response.choices[0].message.content
                 if not content:
                     raise StrategyError("Upstream returned empty completion", "EMPTY_COMPLETION")
@@ -62,7 +75,9 @@ class OpenRouterClient:
     async def forward_raw(self, body: dict[str, Any]) -> ChatCompletion:
         try:
             # Non-streaming forward — streaming requests go through stream_raw.
-            return await self._client.chat.completions.create(**{**body, "stream": False})
+            response = await self._client.chat.completions.create(**{**body, "stream": False})
+            _record_usage(str(body.get("model") or ""), response)
+            return response
         except Exception as exc:
             raise StrategyError("OpenRouter forward failed", "UPSTREAM_ERROR", cause=exc) from exc
 
