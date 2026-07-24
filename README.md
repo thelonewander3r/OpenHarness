@@ -6,7 +6,7 @@
 
 Instead of sending every large agent prompt to an expensive frontier model, clients choose a **strategy** via HTTP header and let the harness optimize cost, context use, and reliability.
 
-**Repository:** [github.com/eman1369a/OpenHarness](https://github.com/eman1369a/OpenHarness)
+**Repository:** [github.com/eman1369a/OpenHarness](https://github.com/thelonewander3r/OpenHarness)
 
 ---
 
